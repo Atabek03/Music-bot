@@ -1,6 +1,7 @@
 import os
 import uuid
 import asyncio
+from aiohttp import web
 from telebot.async_telebot import AsyncTeleBot
 from shazamio import Shazam
 
@@ -83,6 +84,23 @@ async def handle_media(message):
             os.remove(file_path)
 
 
-if __name__ == "__main__":
+async def handle_web(request):
+    return web.Response(text="Bot ishlamoqda!")
+
+
+async def main():
+    app = web.Application()
+    app.router.add_get("/", handle_web)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
     print("Bot ishga tushdi...")
-    asyncio.run(bot.polling(non_stop=True))
+    await bot.polling(non_stop=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
