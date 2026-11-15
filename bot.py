@@ -15,8 +15,9 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 
 def download_mp3(query: str, output_base: str) -> str:
-    """Qo'shiq nomi bo'yicha eng mos audioni topib MP3 formatda saqlaydi."""
-    ydl_opts = {
+    """Qo'shiq nomi bo'yicha audio qidiradi. Avval YouTube, keyin SoundCloud sinab ko'radi."""
+    # 1. YouTube’da qidirish
+    ydl_opts_yt = {
         "format": "bestaudio/best",
         "outtmpl": f"{output_base}.%(ext)s",
         "noplaylist": True,
@@ -31,9 +32,41 @@ def download_mp3(query: str, output_base: str) -> str:
             }
         ],
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([query])
-    return f"{output_base}.mp3"
+    try:
+        print(f"YouTube orqali qidirilmoqda: {query}")
+        with yt_dlp.YoutubeDL(ydl_opts_yt) as ydl:
+            ydl.download([query])
+        if os.path.exists(f"{output_base}.mp3"):
+            return f"{output_base}.mp3"
+    except Exception as e:
+        print(f"YouTube search error: {e}")
+
+    # 2. SoundCloud’da qidirish (Zaxira yo'li - bu yerda bloklanish deyarli bo'lmaydi)
+    ydl_opts_sc = {
+        "format": "bestaudio/best",
+        "outtmpl": f"{output_base}.%(ext)s",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "default_search": "scsearch1",
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ],
+    }
+    try:
+        print(f"SoundCloud orqali zaxira qidiruvi: {query}")
+        with yt_dlp.YoutubeDL(ydl_opts_sc) as ydl:
+            ydl.download([query])
+        if os.path.exists(f"{output_base}.mp3"):
+            return f"{output_base}.mp3"
+    except Exception as e:
+        print(f"SoundCloud search error: {e}")
+
+    raise Exception("Hech bir manbadan audio topilmadi.")
 
 
 @bot.message_handler(commands=["start", "help"])
@@ -86,7 +119,7 @@ async def handle_media(message):
             )
 
             await bot.edit_message_text(
-                f"✅ Topildi: **{artist} - {title}**\n📥 MP3 fayli yuklanmoqda...",
+                f"✅ Topildi: **{artist} - {title}**\n📥 Serverdan MP3 fayli yuklanmoqda...",
                 chat_id=message.chat.id,
                 message_id=status_msg.message_id,
                 parse_mode="Markdown",
@@ -97,19 +130,33 @@ async def handle_media(message):
                 mp3_path = await asyncio.to_thread(
                     download_mp3, f"{artist} - {title}", mp3_base
                 )
-                with open(mp3_path, "rb") as audio_file:
-                    await bot.send_audio(
-                        message.chat.id,
-                        audio_file,
-                        title=title,
-                        performer=artist,
-                        caption=caption_text,
-                        parse_mode="Markdown",
-                    )
-                await bot.delete_message(message.chat.id, status_msg.message_id)
-            except Exception:
+                
+                # Agar fayl yuklangan bo'lsa, uni yuboramiz
+                if mp3_path and os.path.exists(mp3_path):
+                    with open(mp3_path, "rb") as audio_file:
+                        await bot.send_audio(
+                            message.chat.id,
+                            audio_file,
+                            title=title,
+                            performer=artist,
+                            caption=caption_text,
+                            parse_mode="Markdown",
+                        )
+                    await bot.delete_message(message.chat.id, status_msg.message_id)
+                else:
+                    raise Exception("Fayl yaratilmadi")
+
+            except Exception as download_error:
+                # Agar barcha qidiruvlar muvaffaqiyatsiz bo'lsa, ushbu ma'lumotni beradi
+                print(f"Download to'liq muvaffaqiyatsiz tugadi: {download_error}")
+                fallback_text = (
+                    f"✅ Topildi: **{artist} - {title}**\n\n"
+                    f"⚠ Afsuski, server cheklovlari tufayli bu safar MP3 faylini internetdan yuklab berolmadim. "
+                    f"Uni quyidagi havola orqali tinglashingiz mumkin:\n"
+                    f"🔗 [Shazam'da tinglash]({url})"
+                )
                 await bot.edit_message_text(
-                    caption_text,
+                    fallback_text,
                     chat_id=message.chat.id,
                     message_id=status_msg.message_id,
                     parse_mode="Markdown",
@@ -121,7 +168,8 @@ async def handle_media(message):
                 message_id=status_msg.message_id,
             )
 
-    except Exception:
+    except Exception as e:
+        print(f"Xatolik: {e}")
         await bot.edit_message_text(
             "Xatolik yuz berdi. Qisqaroq audio yoki video yuborib ko'ring.",
             chat_id=message.chat.id,
@@ -130,7 +178,10 @@ async def handle_media(message):
     finally:
         for path in (file_path, mp3_path):
             if path and os.path.exists(path):
-                os.remove(path)
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
 
 
 async def handle_web(request):
@@ -152,5 +203,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
