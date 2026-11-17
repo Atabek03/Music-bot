@@ -25,9 +25,9 @@ def extract_sample_for_shazam(media_path: str, sample_output_path: str) -> str:
         "-y",
         "-i",
         media_path,
+        "-vn",
         "-t",
         "25",
-        "-vn",
         "-acodec",
         "libmp3lame",
         "-ab",
@@ -41,9 +41,9 @@ def extract_sample_for_shazam(media_path: str, sample_output_path: str) -> str:
 
 
 def download_video_from_url(url: str, output_base: str) -> str:
-    """Havoladagi videoni MP4 formatda yuklab oladi (45 MB gacha)."""
+    """Havoladagi videoni ovozi bilan birga MP4 formatda yuklab oladi (45 MB gacha)."""
     ydl_opts = {
-        "format": "best[ext=mp4][filesize<45M]/bestvideo[ext=mp4][filesize<40M]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": "bestvideo[ext=mp4][filesize<40M]+bestaudio[ext=m4a]/best[ext=mp4][acodec!=none][filesize<45M]/best[acodec!=none][filesize<45M]/best",
         "outtmpl": f"{output_base}.%(ext)s",
         "merge_output_format": "mp4",
         "noplaylist": True,
@@ -264,10 +264,14 @@ async def handle_link(message):
     promo = get_promo_line()
 
     try:
-        base_path = os.path.join(TEMP_DIR, str(uuid.uuid4()))
-        video_path = await asyncio.to_thread(download_video_from_url, url, base_path)
+        # 1-bosqich: Videoni yuklash va yuborish
+        try:
+            base_path = os.path.join(TEMP_DIR, str(uuid.uuid4()))
+            video_path = await asyncio.to_thread(download_video_from_url, url, base_path)
 
-        if video_path and os.path.exists(video_path):
+            if not video_path or not os.path.exists(video_path):
+                raise Exception("Video fayl saqlanmadi")
+
             with open(video_path, "rb") as video_file:
                 await bot.send_video(
                     message.chat.id,
@@ -275,7 +279,17 @@ async def handle_link(message):
                     caption=f"🎬 Videongiz tayyor!{promo}",
                     supports_streaming=True,
                 )
+        except Exception as video_err:
+            print(f"Video yuklash xatosi: {video_err}")
+            await bot.edit_message_text(
+                "Havoladagi videoni yuklab bo'lmadi. Video hajmi 45 MB dan katta, profil yopiq (Private) yoki platforma cheklov qo'ygan bo'lishi mumkin.",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+            )
+            return
 
+        # 2-bosqich: Videodan ovoz ajratib, to'liq MP3 qidirish
+        try:
             await bot.edit_message_text(
                 "🎵 Videodagi musiqa aniqlanmoqda...",
                 chat_id=message.chat.id,
@@ -287,16 +301,14 @@ async def handle_link(message):
             await recognize_and_send_full_music(
                 message.chat.id, status_msg.message_id, sample_mp3
             )
-        else:
-            raise Exception("Video fayl saqlanmadi")
+        except Exception as audio_err:
+            print(f"Videodan audio ajratish xatosi: {audio_err}")
+            await bot.edit_message_text(
+                "❌ Videodan ovoz ajratib bo'lmadi yoki videoda musiqa mavjud emas.",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+            )
 
-    except Exception as e:
-        print(f"Havola xatosi: {e}")
-        await bot.edit_message_text(
-            "Havoladagi videoni yuklab bo'lmadi. Video hajmi 45 MB dan katta, profil yopiq (Private) yoki platforma cheklov qo'ygan bo'lishi mumkin.",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id,
-        )
     finally:
         for path in (video_path, sample_mp3):
             if path and os.path.exists(path):
