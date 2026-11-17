@@ -15,6 +15,8 @@ shazam = Shazam()
 TEMP_DIR = "downloads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+BOT_USERNAME = ""
+
 
 def extract_sample_for_shazam(media_path: str, sample_output_path: str) -> str:
     """Shazam aniq tanishi uchun fayldan 25 soniyalik toza audio namuna oladi."""
@@ -87,7 +89,7 @@ def download_full_mp3(artist: str, title: str, output_base: str) -> str:
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
-            "ignoreerrors": True,  # Bloklangan trekka duch kelsa keyingisiga o'tadi
+            "ignoreerrors": True,
             "max_downloads": 1,
             "match_filter": full_track_filter,
             "postprocessors": [
@@ -104,7 +106,6 @@ def download_full_mp3(artist: str, title: str, output_base: str) -> str:
         except Exception as e:
             print(f"Qidiruv jarayoni ({query}): {e}")
 
-        # Fayl yuklanganini va 30 soniyalik preview emasligini (kamida 700 KB) tekshiramiz
         if os.path.exists(mp3_file):
             if os.path.getsize(mp3_file) > 700 * 1024:
                 return mp3_file
@@ -114,9 +115,17 @@ def download_full_mp3(artist: str, title: str, output_base: str) -> str:
     raise Exception("To'liq MP3 fayl topilmadi.")
 
 
+def get_promo_line() -> str:
+    """Botning o'z manzilini chiroyli reklama ko'rinishida qaytaradi."""
+    if BOT_USERNAME:
+        return f"\n\n🤖 @{BOT_USERNAME} orqali yuklandi"
+    return ""
+
+
 async def recognize_and_send_full_music(chat_id: int, status_msg_id: int, sample_path: str):
-    """Shazam orqali qo'shiqni aniqlaydi va to'liq MP3 faylini yuboradi."""
+    """Shazam orqali qo'shiqni aniqlaydi va to'liq MP3 faylini reklama matni bilan yuboradi."""
     full_mp3_path = None
+    promo = get_promo_line()
     try:
         result = await shazam.recognize(sample_path)
         track = result.get("track")
@@ -136,6 +145,7 @@ async def recognize_and_send_full_music(chat_id: int, status_msg_id: int, sample
             f"🎵 **Qo'shiq:** {title}\n"
             f"👤 **Ijrochi:** {artist}\n"
             f"🔗 [Shazam'da tinglash]({url})"
+            f"{promo}"
         )
 
         await bot.edit_message_text(
@@ -170,7 +180,8 @@ async def recognize_and_send_full_music(chat_id: int, status_msg_id: int, sample
             await bot.edit_message_text(
                 f"✅ Topildi: **{artist} - {title}**\n\n"
                 f"⚠ Afsuski, bu qo'shiqning to'liq MP3 fayli ochiq manbalardan topilmadi:\n"
-                f"🔗 [Shazam'da tinglash]({url})",
+                f"🔗 [Shazam'da tinglash]({url})"
+                f"{promo}",
                 chat_id=chat_id,
                 message_id=status_msg_id,
                 parse_mode="Markdown",
@@ -250,6 +261,7 @@ async def handle_link(message):
     status_msg = await bot.reply_to(message, "📥 Havoladan video yuklanmoqda, biroz kuting...")
     video_path = None
     sample_mp3 = None
+    promo = get_promo_line()
 
     try:
         base_path = os.path.join(TEMP_DIR, str(uuid.uuid4()))
@@ -260,7 +272,7 @@ async def handle_link(message):
                 await bot.send_video(
                     message.chat.id,
                     video_file,
-                    caption="🎬 Videongiz tayyor!",
+                    caption=f"🎬 Videongiz tayyor!{promo}",
                     supports_streaming=True,
                 )
 
@@ -299,6 +311,10 @@ async def handle_web(request):
 
 
 async def main():
+    global BOT_USERNAME
+    me = await bot.get_me()
+    BOT_USERNAME = me.username or ""
+
     app = web.Application()
     app.router.add_get("/", handle_web)
     runner = web.AppRunner(app)
@@ -307,11 +323,10 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("Bot ishga tushdi...")
+    print(f"Bot @{BOT_USERNAME} ishga tushdi...")
     await bot.polling(non_stop=True)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
