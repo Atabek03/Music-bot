@@ -16,24 +16,26 @@ TEMP_DIR = "downloads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 
-def extract_audio_from_video(video_path: str, audio_output_path: str) -> str:
-    """Video fayldan Shazam va foydalanuvchi uchun toza MP3 audio ajratib oladi."""
+def extract_sample_for_shazam(media_path: str, sample_output_path: str) -> str:
+    """Shazam aniq tanishi uchun fayldan 25 soniyalik toza audio namuna oladi."""
     cmd = [
         "ffmpeg",
         "-y",
         "-i",
-        video_path,
+        media_path,
+        "-t",
+        "25",
         "-vn",
         "-acodec",
         "libmp3lame",
         "-ab",
-        "192k",
+        "128k",
         "-ar",
         "44100",
-        audio_output_path,
+        sample_output_path,
     ]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-    return audio_output_path
+    return sample_output_path
 
 
 def download_video_from_url(url: str, output_base: str) -> str:
@@ -57,82 +59,74 @@ def download_video_from_url(url: str, output_base: str) -> str:
         return filename
 
 
-def download_mp3(query: str, output_base: str) -> str:
-    """Qo'shiq nomi bo'yicha to'liq MP3 fayl qidiradi (YouTube -> SoundCloud)."""
-    ydl_opts_yt = {
-        "format": "bestaudio/best",
-        "outtmpl": f"{output_base}.%(ext)s",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "default_search": "ytsearch1",
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts_yt) as ydl:
-            ydl.download([query])
-        if os.path.exists(f"{output_base}.mp3"):
-            return f"{output_base}.mp3"
-    except Exception as e:
-        print(f"YouTube search error: {e}")
-
-    ydl_opts_sc = {
-        "format": "bestaudio/best",
-        "outtmpl": f"{output_base}.%(ext)s",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "default_search": "scsearch1",
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts_sc) as ydl:
-            ydl.download([query])
-        if os.path.exists(f"{output_base}.mp3"):
-            return f"{output_base}.mp3"
-    except Exception as e:
-        print(f"SoundCloud search error: {e}")
-
-    raise Exception("Hech bir manbadan audio topilmadi.")
+def full_track_filter(info, *, incomplete):
+    """60 soniyadan qisqa parchalarni o'tkazib yuboradi."""
+    duration = info.get("duration")
+    if duration and duration < 60:
+        return "Qisqa parcha, keyingisi tekshiriladi"
+    return None
 
 
-async def recognize_and_send_music(
-    chat_id: int, status_msg_id: int, clean_audio_path: str, send_original_if_not_found: bool = False
-):
-    """Toza MP3 fayl orqali musiqani aniqlaydi va to'liq qo'shiqni yuboradi."""
+def download_full_mp3(artist: str, title: str, output_base: str) -> str:
+    """Bloklangan yoki qisqa parchalarni chetlab o'tib, to'liq MP3 faylni yuklaydi."""
+    search_queries = [
+        f"scsearch5:{artist} - {title}",
+        f"scsearch5:{title} {artist}",
+        f"ytsearch5:{artist} - {title} official audio",
+    ]
+
+    mp3_file = f"{output_base}.mp3"
+
+    for query in search_queries:
+        if os.path.exists(mp3_file):
+            os.remove(mp3_file)
+
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": f"{output_base}.%(ext)s",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "ignoreerrors": True,  # Bloklangan trekka duch kelsa keyingisiga o'tadi
+            "max_downloads": 1,
+            "match_filter": full_track_filter,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([query])
+        except Exception as e:
+            print(f"Qidiruv jarayoni ({query}): {e}")
+
+        # Fayl yuklanganini va 30 soniyalik preview emasligini (kamida 700 KB) tekshiramiz
+        if os.path.exists(mp3_file):
+            if os.path.getsize(mp3_file) > 700 * 1024:
+                return mp3_file
+            else:
+                os.remove(mp3_file)
+
+    raise Exception("To'liq MP3 fayl topilmadi.")
+
+
+async def recognize_and_send_full_music(chat_id: int, status_msg_id: int, sample_path: str):
+    """Shazam orqali qo'shiqni aniqlaydi va to'liq MP3 faylini yuboradi."""
     full_mp3_path = None
     try:
-        result = await shazam.recognize(clean_audio_path)
+        result = await shazam.recognize(sample_path)
         track = result.get("track")
 
         if not track:
-            if send_original_if_not_found and os.path.exists(clean_audio_path):
-                with open(clean_audio_path, "rb") as orig_audio:
-                    await bot.send_audio(
-                        chat_id,
-                        orig_audio,
-                        title="Videodagi audio",
-                        caption="🎵 Shazam'dan topilmadi, shuning uchun videoning o'z audiosi ajratib berildi.",
-                    )
-                await bot.delete_message(chat_id, status_msg_id)
-            else:
-                await bot.edit_message_text(
-                    "Afsuski, bu yerdan musiqani aniqlab bo'lmadi.",
-                    chat_id=chat_id,
-                    message_id=status_msg_id,
-                )
+            await bot.edit_message_text(
+                "❌ Musiqa Shazam bazasidan topilmadi.",
+                chat_id=chat_id,
+                message_id=status_msg_id,
+            )
             return
 
         title = track.get("title", "Noma'lum qo'shiq")
@@ -145,7 +139,7 @@ async def recognize_and_send_music(
         )
 
         await bot.edit_message_text(
-            f"✅ Musiqa topildi: **{artist} - {title}**\n📥 To'liq MP3 yuklanmoqda...",
+            f"✅ Topildi: **{artist} - {title}**\n📥 To'liq MP3 yuklanmoqda...",
             chat_id=chat_id,
             message_id=status_msg_id,
             parse_mode="Markdown",
@@ -154,7 +148,7 @@ async def recognize_and_send_music(
         try:
             mp3_base = os.path.join(TEMP_DIR, str(uuid.uuid4()))
             full_mp3_path = await asyncio.to_thread(
-                download_mp3, f"{artist} - {title}", mp3_base
+                download_full_mp3, artist, title, mp3_base
             )
 
             if full_mp3_path and os.path.exists(full_mp3_path):
@@ -169,28 +163,18 @@ async def recognize_and_send_music(
                     )
                 await bot.delete_message(chat_id, status_msg_id)
             else:
-                raise Exception("MP3 fayl yaratilmadi")
+                raise Exception("Fayl yaratilmadi")
 
         except Exception as download_error:
-            print(f"MP3 yuklashda xatolik: {download_error}")
-            if send_original_if_not_found and os.path.exists(clean_audio_path):
-                with open(clean_audio_path, "rb") as orig_audio:
-                    await bot.send_audio(
-                        chat_id,
-                        orig_audio,
-                        title=title,
-                        performer=artist,
-                        caption=f"{caption_text}\n\n_(To'liq versiyani yuklab bo'lmadi, videodagi audio yuborildi)_",
-                        parse_mode="Markdown",
-                    )
-                await bot.delete_message(chat_id, status_msg_id)
-            else:
-                await bot.edit_message_text(
-                    f"✅ Topildi: **{artist} - {title}**\n🔗 [Shazam'da tinglash]({url})",
-                    chat_id=chat_id,
-                    message_id=status_msg_id,
-                    parse_mode="Markdown",
-                )
+            print(f"To'liq MP3 yuklashda xatolik: {download_error}")
+            await bot.edit_message_text(
+                f"✅ Topildi: **{artist} - {title}**\n\n"
+                f"⚠ Afsuski, bu qo'shiqning to'liq MP3 fayli ochiq manbalardan topilmadi:\n"
+                f"🔗 [Shazam'da tinglash]({url})",
+                chat_id=chat_id,
+                message_id=status_msg_id,
+                parse_mode="Markdown",
+            )
     finally:
         if full_mp3_path and os.path.exists(full_mp3_path):
             try:
@@ -202,9 +186,9 @@ async def recognize_and_send_music(
 @bot.message_handler(commands=["start", "help"])
 async def send_welcome(message):
     text = (
-        "Salom! Men video va musiqani yuklab beruvchi botman.\n\n"
+        "Salom! Men video va to'liq musiqani yuklab beruvchi botman.\n\n"
         "Menga quyidagilardan birini yuboring:\n"
-        "• Instagram Reels, TikTok yoki YouTube havolasi (ham videosini, ham musiqasini yuboraman)\n"
+        "• Instagram Reels, TikTok yoki YouTube havolasi (tepada video, tagida to'liq MP3 yuboraman)\n"
         "• Ovozli xabar (golos)\n"
         "• Qisqa video yoki dumaloq video\n"
         "• Audio fayl"
@@ -216,7 +200,7 @@ async def send_welcome(message):
 async def handle_media(message):
     status_msg = await bot.reply_to(message, "Musiqa qidirilmoqda, biroz kuting...")
     raw_path = None
-    clean_mp3 = None
+    sample_mp3 = None
 
     try:
         if message.audio:
@@ -236,11 +220,11 @@ async def handle_media(message):
         with open(raw_path, "wb") as f:
             f.write(downloaded_bytes)
 
-        clean_mp3 = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.mp3")
-        await asyncio.to_thread(extract_audio_from_video, raw_path, clean_mp3)
+        sample_mp3 = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.mp3")
+        await asyncio.to_thread(extract_sample_for_shazam, raw_path, sample_mp3)
 
-        await recognize_and_send_music(
-            message.chat.id, status_msg.message_id, clean_mp3, send_original_if_not_found=False
+        await recognize_and_send_full_music(
+            message.chat.id, status_msg.message_id, sample_mp3
         )
 
     except Exception as e:
@@ -251,7 +235,7 @@ async def handle_media(message):
             message_id=status_msg.message_id,
         )
     finally:
-        for path in (raw_path, clean_mp3):
+        for path in (raw_path, sample_mp3):
             if path and os.path.exists(path):
                 try:
                     os.remove(path)
@@ -265,14 +249,13 @@ async def handle_link(message):
     url = match.group(0)
     status_msg = await bot.reply_to(message, "📥 Havoladan video yuklanmoqda, biroz kuting...")
     video_path = None
-    extracted_mp3 = None
+    sample_mp3 = None
 
     try:
         base_path = os.path.join(TEMP_DIR, str(uuid.uuid4()))
         video_path = await asyncio.to_thread(download_video_from_url, url, base_path)
 
         if video_path and os.path.exists(video_path):
-            # 1. Videoning o'zini yuboramiz
             with open(video_path, "rb") as video_file:
                 await bot.send_video(
                     message.chat.id,
@@ -281,21 +264,16 @@ async def handle_link(message):
                     supports_streaming=True,
                 )
 
-            # 2. Videodan toza MP3 ovozni ajratamiz
             await bot.edit_message_text(
                 "🎵 Videodagi musiqa aniqlanmoqda...",
                 chat_id=message.chat.id,
                 message_id=status_msg.message_id,
             )
-            extracted_mp3 = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.mp3")
-            await asyncio.to_thread(extract_audio_from_video, video_path, extracted_mp3)
+            sample_mp3 = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.mp3")
+            await asyncio.to_thread(extract_sample_for_shazam, video_path, sample_mp3)
 
-            # 3. Shazam orqali topib to'liq MP3 yuboramiz (topilmasa videoning o'z audiosi boradi)
-            await recognize_and_send_music(
-                message.chat.id,
-                status_msg.message_id,
-                extracted_mp3,
-                send_original_if_not_found=True,
+            await recognize_and_send_full_music(
+                message.chat.id, status_msg.message_id, sample_mp3
             )
         else:
             raise Exception("Video fayl saqlanmadi")
@@ -308,7 +286,7 @@ async def handle_link(message):
             message_id=status_msg.message_id,
         )
     finally:
-        for path in (video_path, extracted_mp3):
+        for path in (video_path, sample_mp3):
             if path and os.path.exists(path):
                 try:
                     os.remove(path)
@@ -335,6 +313,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 
