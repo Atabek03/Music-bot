@@ -15,26 +15,25 @@ TEMP_DIR = "downloads"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 
-def download_audio_from_url(url: str, output_base: str) -> str:
-    """Havoladagi videodan faqat audio qismini ajratib oladi."""
+def download_video_from_url(url: str, output_base: str) -> str:
+    """Havoladagi videoni MP4 formatda yuklab oladi (Telegram 50 MB limitiga moslab)."""
     ydl_opts = {
-        "format": "bestaudio/best",
+        "format": "best[ext=mp4][filesize<45M]/bestvideo[ext=mp4][filesize<40M]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "outtmpl": f"{output_base}.%(ext)s",
+        "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "max_filesize": 30 * 1024 * 1024,  # Maksimal 30 MB
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "128",
-            }
-        ],
+        "max_filesize": 45 * 1024 * 1024,  # Maksimal 45 MB
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-    return f"{output_base}.mp3"
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+        base, _ = os.path.splitext(filename)
+        mp4_file = f"{base}.mp4"
+        if os.path.exists(mp4_file):
+            return mp4_file
+        return filename
 
 
 def download_mp3(query: str, output_base: str) -> str:
@@ -88,16 +87,16 @@ def download_mp3(query: str, output_base: str) -> str:
     raise Exception("Hech bir manbadan audio topilmadi.")
 
 
-async def process_and_send_song(chat_id: int, status_msg_id: int, source_audio_path: str):
-    """Audio fayldan musiqani aniqlaydi va topilgan qo'shiqning MP3 faylini yuboradi."""
+async def process_and_send_song(chat_id: int, status_msg_id: int, source_path: str):
+    """Video yoki audiodan musiqani aniqlaydi va topilgan qo'shiqning MP3 faylini yuboradi."""
     mp3_path = None
     try:
-        result = await shazam.recognize(source_audio_path)
+        result = await shazam.recognize(source_path)
         track = result.get("track")
 
         if not track:
             await bot.edit_message_text(
-                "Afsuski, bu yerdan musiqani aniqlab bo'lmadi.",
+                "Videoda musiqa aniqlanmadi (yoki oddiy suhbat videosi).",
                 chat_id=chat_id,
                 message_id=status_msg_id,
             )
@@ -113,7 +112,7 @@ async def process_and_send_song(chat_id: int, status_msg_id: int, source_audio_p
         )
 
         await bot.edit_message_text(
-            f"✅ Topildi: **{artist} - {title}**\n📥 MP3 fayli yuklanmoqda...",
+            f"✅ Musiqa topildi: **{artist} - {title}**\n📥 MP3 fayli yuklanmoqda...",
             chat_id=chat_id,
             message_id=status_msg_id,
             parse_mode="Markdown",
@@ -143,8 +142,7 @@ async def process_and_send_song(chat_id: int, status_msg_id: int, source_audio_p
             print(f"MP3 yuklashda xatolik: {download_error}")
             fallback_text = (
                 f"✅ Topildi: **{artist} - {title}**\n\n"
-                f"⚠ Server cheklovi sababli MP3 faylini yuklab bo'lmadi. "
-                f"Quyidagi havola orqali tinglashingiz mumkin:\n"
+                f"⚠ MP3 faylini yuklab bo'lmadi. Quyidagi havola orqali tinglashingiz mumkin:\n"
                 f"🔗 [Shazam'da tinglash]({url})"
             )
             await bot.edit_message_text(
@@ -164,9 +162,9 @@ async def process_and_send_song(chat_id: int, status_msg_id: int, source_audio_p
 @bot.message_handler(commands=["start", "help"])
 async def send_welcome(message):
     text = (
-        "Salom! Men musiqani topuvchi va MP3 yuklab beruvchi botman.\n\n"
+        "Salom! Men video va musiqani yuklab beruvchi botman.\n\n"
         "Menga quyidagilardan birini yuboring:\n"
-        "• Instagram Reels, TikTok yoki YouTube havolasi\n"
+        "• Instagram Reels, TikTok yoki YouTube havolasi (ham videosini, ham musiqasini tashlab beraman)\n"
         "• Ovozli xabar (golos)\n"
         "• Qisqa video yoki dumaloq video\n"
         "• Audio fayl"
@@ -218,36 +216,48 @@ async def handle_media(message):
 async def handle_link(message):
     match = re.search(r"https?://\S+", message.text)
     url = match.group(0)
-    status_msg = await bot.reply_to(message, "Havoladan audio yuklanmoqda, biroz kuting...")
-    link_audio_path = None
+    status_msg = await bot.reply_to(message, "📥 Havoladan video yuklanmoqda, biroz kuting...")
+    video_path = None
 
     try:
         base_path = os.path.join(TEMP_DIR, str(uuid.uuid4()))
-        link_audio_path = await asyncio.to_thread(
-            download_audio_from_url, url, base_path
+        video_path = await asyncio.to_thread(
+            download_video_from_url, url, base_path
         )
 
-        await bot.edit_message_text(
-            "Musiqa aniqlanmoqda...",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id,
-        )
+        # 1. Yuklangan videoning o'zini foydalanuvchiga yuboramiz
+        if video_path and os.path.exists(video_path):
+            with open(video_path, "rb") as video_file:
+                await bot.send_video(
+                    message.chat.id,
+                    video_file,
+                    caption="🎬 Videongiz tayyor!",
+                    supports_streaming=True,
+                )
 
-        await process_and_send_song(
-            message.chat.id, status_msg.message_id, link_audio_path
-        )
+            # 2. Endi shu videoning ichidagi musiqani qidiramiz
+            await bot.edit_message_text(
+                "🎵 Video ichidagi musiqa aniqlanmoqda...",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+            )
+            await process_and_send_song(
+                message.chat.id, status_msg.message_id, video_path
+            )
+        else:
+            raise Exception("Video fayl saqlanmadi")
 
     except Exception as e:
         print(f"Havola xatosi: {e}")
         await bot.edit_message_text(
-            "Havoladagi videoni yuklab bo'lmadi. Profil yopiq (Private) bo'lishi yoki platforma cheklov qo'ygan bo'lishi mumkin.",
+            "Havoladagi videoni yuklab bo'lmadi. Video hajmi 45 MB dan katta, profil yopiq (Private) yoki platforma cheklov qo'ygan bo'lishi mumkin.",
             chat_id=message.chat.id,
             message_id=status_msg.message_id,
         )
     finally:
-        if link_audio_path and os.path.exists(link_audio_path):
+        if video_path and os.path.exists(video_path):
             try:
-                os.remove(link_audio_path)
+                os.remove(video_path)
             except OSError:
                 pass
 
@@ -271,6 +281,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
